@@ -32,10 +32,10 @@ L_LIB_API void hm_array_free_internal(void *ary_p);
 	(hm_array_from_void(ary_p)->count) = (_count)
 
 #define hm_array_resize(ary_p, capacity) \
-	(ary_p) = (typeof(ary_p)) hm_array_resize_internal(ary_p, sizeof(typeof(ary_p[0])), capacity)
+	(ary_p) = (typeof(ary_p)) hm_array_resize_internal(ary_p, sizeof(ary_p[0]), capacity)
 
 #define hm_array_new(ary_p, capacity) \
-	(ary_p) = (typeof(ary_p)) hm_array_resize_internal(NULL, sizeof(typeof(ary_p[0])), capacity)
+	(ary_p) = (typeof(ary_p)) hm_array_resize_internal(NULL, sizeof(ary_p[0]), capacity)
 
 #define hm_array_free(ary_p) do { \
 	hm_array_free_internal(ary_p); (ary_p) = NULL; \
