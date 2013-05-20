@@ -28,6 +28,10 @@ object "HMParser" {
 		c_method_call "void" "hm_parser_reset" {},
 	},
 
+	method "next_message" {
+		c_method_call "void" "hm_parser_next_message" {},
+	},
+
 	method "parse" {
 		c_method_call "uint32_t" "hm_parser_parse" { "bool", "is_eof" },
 	},

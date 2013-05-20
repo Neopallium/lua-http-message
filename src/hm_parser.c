@@ -1,5 +1,6 @@
 #include <assert.h>
 #include <stdlib.h>
+#include <stdint.h>
 #include <string.h>
 
 #include "hm_parser.h"
@@ -10,34 +11,46 @@
 
 #include "http-parser/http_parser.h"
 
-#define HTTP_TOKENIZER_MAX_TOKENS		4096
+#define MIN_BUFFER_SPACE 1024
 
-#define HTTP_TOKEN_MESSAGE_BEGIN      0
-#define HTTP_TOKEN_URL                1
-#define HTTP_TOKEN_HEADER_FIELD       2
-#define HTTP_TOKEN_HEADER_VALUE       3
-#define HTTP_TOKEN_HEADERS_COMPLETE   4
-#define HTTP_TOKEN_BODY               5
-#define HTTP_TOKEN_MESSAGE_COMPLETE   6
+#define MAX_HEADERS 512
+#define INIT_HEADERS 8
+#define GROW_HEADERS 8
+
+#define MAX_CHUNKS 512
+#define INIT_CHUNKS 16
+#define GROW_CHUNKS 16
+
+#define MAX_PIECES  4096
+#define INIT_PIECES ((INIT_HEADERS * 2) + INIT_CHUNKS)
+#define GROW_PIECES 128
+
+typedef enum {
+	hm_piece_url = 0,
+	hm_piece_header_field,
+	hm_piece_header_value,
+	hm_piece_body,
+	hm_piece_none,
+} hm_piece_t;
 
 typedef uint32_t httpoff_t;
 typedef uint32_t httplen_t;
 
+#define HM_PIECE_INVALID (UINT32_MAX)
+
 typedef uint32_t hm_len_t;
 
-#define HTTP_TOKENIZER_MAX_CHUNK_LENGTH (2 ^ (sizeof(httplen_t) * 8))
+typedef struct HMPiece HMPiece;
+typedef struct HMHeader HMHeader;
 
-typedef struct http_token http_token;
-struct http_token {
-	uint32_t    id;   /**< token id. */
-	httpoff_t   off;  /**< token offset. */
-	httplen_t   len;  /**< token length. */
+struct HMPiece {
+	httpoff_t   start;  /**< offset to start of piece in the buffer. */
+	httpoff_t   end;    /**< offset to end of piece in the buffer. */
 };
 
-#define MIN_BUFFER_SPACE 1024
-
-#define INIT_TOKENS 32
-#define GROW_TOKENS 128
+struct HMHeader {
+	uint16_t idx;    /**< offset to header's pieces. (name at idx, value at idx+1) */
+};
 
 /**
  * HTTP message object.
@@ -46,19 +59,35 @@ struct http_token {
  */
 struct HMParser {
 	http_parser parser;   /**< embedded http_parser. */
-	http_token  *tokens;  /**< array of parsed tokens. */
-	uint16_t    count;    /**< number of parsed tokens. */
-	uint16_t    len;      /**< length of tokens array. */
+	HMPiece       *pieces;
+	hm_piece_t    last_id;
 	int is_eof;
+	hm_parser_state_t state;
 	hm_len_t      parsed_off;   /**< http parser offset. */
 	hm_len_t      buf_len;      /**< number of bytes in buffer. */
 	HMBuffer      *buf;         /**< buffer to hold raw http message. */
+	/* HTTP Message fields. */
+	int           url_idx;
+	int           headers_start;
+	int           headers_end;
+	int           body_start;
 };
+
+static void hm_parser_clear_message(HMParser *hm_parser) {
+	/* clear parser state. */
+	hm_parser->state = hm_parser_state_none;
+	hm_parser->last_id = hm_piece_none;
+	/* clear HTTP Message fields */
+	hm_array_set_count(hm_parser->pieces, 0);
+	hm_parser->url_idx = HM_PIECE_INVALID;
+	hm_parser->headers_start = HM_PIECE_INVALID;
+	hm_parser->headers_end = HM_PIECE_INVALID;
+	hm_parser->body_start = HM_PIECE_INVALID;
+}
 
 static HMParser *hm_parser_new(int is_request) {
 	HMParser* hm_parser;
 	http_parser* parser;
-	uint32_t len = INIT_TOKENS;
 
 	hm_parser = (HMParser *)malloc(sizeof(HMParser));
 	/* init. http parser. */
@@ -69,16 +98,16 @@ static HMParser *hm_parser_new(int is_request) {
 		parser->type = HTTP_RESPONSE;
 	}
 	http_parser_init(parser, parser->type);
-	/* allocate token array. */
-	hm_parser->tokens = (http_token *)calloc(len, sizeof(http_token));
-	hm_parser->len = len;
-	hm_parser->count = 0;
+	/* allocate piece array. */
+	hm_array_new(hm_parser->pieces, INIT_PIECES);
 	/* allocate buffer. */
 	hm_parser->buf = hm_buffer_new(MIN_BUFFER_SPACE);
 	parser->data = (char *)hm_buffer_data(hm_parser->buf);
 	/* clear buffer state. */
 	hm_parser->parsed_off = 0;
 	hm_parser->buf_len = 0;
+
+	hm_parser_clear_message(hm_parser);
 
 	return hm_parser;
 }
@@ -91,127 +120,177 @@ HMParser *hm_parser_new_request() {
 	return hm_parser_new(1);
 }
 
+void hm_parser_next_message(HMParser *hm_parser) {
+	size_t offset = hm_parser->parsed_off;
+	size_t len = hm_parser->buf_len;
+
+	/* remove previous message from buffer. */
+	if(offset < len) {
+		/* The buffer has some data for the next message.
+		 * Compact the buffer.
+		 */
+		char *data = (char *)hm_buffer_data(hm_parser->buf);
+		len -= offset;
+		memmove(data, data + offset, len);
+	} else {
+		len = 0;
+	}
+	hm_parser->parsed_off = 0;
+	hm_parser->buf_len = len;
+
+	hm_parser_clear_message(hm_parser);
+}
+
 void hm_parser_reset(HMParser* hm_parser) {
 	http_parser* parser = &(hm_parser->parser);
 
-	hm_parser->count = 0;
 	http_parser_init(parser, parser->type);
 	parser->data = (char *)hm_buffer_data(hm_parser->buf);
 	/* clear buffer state. */
 	hm_parser->parsed_off = 0;
 	hm_parser->buf_len = 0;
 	hm_parser->is_eof = true;
+
+	hm_parser_clear_message(hm_parser);
 }
 
 void hm_parser_free(HMParser* hm_parser) {
 	hm_buffer_free(hm_parser->buf);
 	hm_parser->buf = NULL;
-	free(hm_parser->tokens);
-	hm_parser->tokens = NULL;
+	hm_array_free(hm_parser->pieces);
+	hm_parser->pieces = NULL;
 	free(hm_parser);
 }
 
-static int hm_parser_grow(HMParser *hm_parser) {
-	uint32_t    len = hm_parser->len + GROW_TOKENS;
-	http_token  *tokens;
-
-	if(len > HTTP_TOKENIZER_MAX_TOKENS) return -1;
-
-	tokens = (http_token *)realloc(hm_parser->tokens, sizeof(http_token) * len);
-	if(tokens == NULL) return -1;
-	hm_parser->tokens = tokens;
-	hm_parser->len = len;
-	if((len + GROW_TOKENS) > HTTP_TOKENIZER_MAX_TOKENS) {
-		/* can't hold any more tokens, pause parsing. */
-		http_parser_pause(&(hm_parser->parser), 1);
-	}
-	return 0;
-}
-
-#define HTTP_TOKENIZER_GROW_CHECK(hm_parser) do { \
-	if((hm_parser)->count >= (hm_parser)->len) { \
-		if(hm_parser_grow(hm_parser) != 0) { \
+#define HM_PARSER_ARY_GROW_CHECK(hm_parser, _ary, _idx, _grow, _max) do { \
+	typeof((hm_parser)->_ary) ary = (hm_parser)->_ary; \
+	size_t count = hm_array_count(ary) + 1; \
+	size_t cap = hm_array_capacity(ary); \
+	if(count >= cap) { \
+		if(cap == (_max)) { \
 			return -1; \
+		} else { \
+			cap += (_grow); \
+			if(cap > (_max)) cap = (_max); \
+			hm_array_resize(ary, cap); \
+			if(ary == NULL) return -1; \
+			(hm_parser)->_ary = ary; \
 		} \
 	} \
+	(_idx) = count; \
 } while(0)
 
-/* push token with no data. */
-static int http_push_token(http_parser* parser, int token_id) {
-	HMParser *hm_parser = (HMParser*)parser;
-	uint32_t idx = hm_parser->count++;
-	http_token *token;
+#define HM_PARSER_PIECES_GROW_CHECK(hm_parser, _idx) \
+	HM_PARSER_ARY_GROW_CHECK(hm_parser, pieces, _idx, GROW_PIECES, MAX_PIECES)
 
-	HTTP_TOKENIZER_GROW_CHECK(hm_parser);
-
-	token = hm_parser->tokens + idx;
-	token->id = token_id;
-	token->off = 0;
-	token->len = 0;
-
-	return 0;
-}
-
-/* push token with data. */
-static int http_push_data_token(http_parser* parser, int token_id, const char *data, size_t len) {
+/* push piece. */
+static int http_push_piece(http_parser* parser, hm_piece_t piece_id, const char *data, size_t len) {
 	HMParser *hm_parser = (HMParser*)parser;
 	const char *data_start = (const char *)parser->data;
-	uint32_t idx = hm_parser->count++;
-	http_token *token;
+	size_t start = data - data_start;
+	uint32_t idx;
+	HMPiece *piece;
+	bool append_to_last = false;
 
-	HTTP_TOKENIZER_GROW_CHECK(hm_parser);
+	/* check if we need to append data to last piece. */
+	if(hm_parser->last_id == piece_id) {
+		append_to_last = true;
+		/* don't merge large body pieces. */
+		if(piece_id == hm_piece_body && len > 100) {
+			append_to_last = false;
+		}
+	}
 
-	token = hm_parser->tokens + idx;
-	token->id = token_id;
-	token->off = (data - data_start);
-	token->len = len;
+	if(append_to_last) {
+		size_t end;
+		/* append data to last piece. */
+		idx = hm_array_count(hm_parser->pieces);
+		piece = hm_parser->pieces + idx;
+		/* check for buffer gaps. */
+		end = piece->end;
+		if(end != start) {
+			char *end_ptr = ((char *)parser->data) + end;
+			/* close gap for this piece. */
+			memmove(end_ptr, data, len);
+		}
+		piece->end = end + len;
+		return 0;
+	}
 
+	/* start new piece. */
+	HM_PARSER_PIECES_GROW_CHECK(hm_parser, idx);
+
+	hm_parser->last_id = piece_id;
+
+	/* initialize new piece. */
+	piece = hm_parser->pieces + idx;
+	piece->start = start;
+	piece->end = start + len;
 	return 0;
 }
 
 static int hm_parser_message_begin_cb(http_parser* parser) {
-	return http_push_token(parser, HTTP_TOKEN_MESSAGE_BEGIN);
+	HMParser *hm_parser = (HMParser*)parser;
+	hm_parser->state = hm_parser_state_message_begin;
+	hm_parser->last_id = hm_piece_none;
+	return 0;
+}
+
+static int hm_parser_status_complete_cb(http_parser* parser) {
+	HMParser *hm_parser = (HMParser*)parser;
+	hm_parser->state = hm_parser_state_status_complete;
+	hm_parser->last_id = hm_piece_none;
+	return 0;
 }
 
 static int hm_parser_url_cb(http_parser* parser, const char* data, size_t len) {
-	return http_push_data_token(parser, HTTP_TOKEN_URL, data, len);
+	HMParser *hm_parser = (HMParser*)parser;
+	hm_parser->state = hm_parser_state_url;
+	if(hm_parser->url_idx < 0) {
+		hm_parser->url_idx = hm_array_count(hm_parser->pieces);
+	}
+	return http_push_piece(parser, hm_piece_url, data, len);
 }
 
 static int hm_parser_header_field_cb(http_parser* parser, const char* data, size_t len) {
-	return http_push_data_token(parser, HTTP_TOKEN_HEADER_FIELD, data, len);
+	HMParser *hm_parser = (HMParser*)parser;
+	hm_parser->state = hm_parser_state_headers;
+	if(hm_parser->headers_start < 0) {
+		hm_parser->headers_start = hm_array_count(hm_parser->pieces);
+		hm_parser->headers_end = hm_parser->headers_start;
+	}
+	return http_push_piece(parser, hm_piece_header_field, data, len);
 }
 
 static int hm_parser_header_value_cb(http_parser* parser, const char* data, size_t len) {
-	return http_push_data_token(parser, HTTP_TOKEN_HEADER_VALUE, data, len);
+	HMParser *hm_parser = (HMParser*)parser;
+	hm_parser->state = hm_parser_state_headers;
+	return http_push_piece(parser, hm_piece_header_value, data, len);
 }
 
 static int hm_parser_headers_complete_cb(http_parser* parser) {
-	if(http_push_token(parser, HTTP_TOKEN_HEADERS_COMPLETE) < 0) return -1;
+	HMParser *hm_parser = (HMParser*)parser;
+	hm_parser->state = hm_parser_state_headers_complete;
+	hm_parser->last_id = hm_piece_none;
+	/* mark end of headers. */
+	hm_parser->headers_end = hm_array_count(hm_parser->pieces);
 	http_parser_pause(parser, 1);
 	return 0;
 }
 
 static int hm_parser_body_cb(http_parser* parser, const char* data, size_t len) {
+	HMParser *hm_parser = (HMParser*)parser;
+	hm_parser->state = hm_parser_state_body;
 	if(len == 0) return 0;
-	return http_push_data_token(parser, HTTP_TOKEN_BODY, data, len);
+	return http_push_piece(parser, hm_piece_body, data, len);
 }
 
 static int hm_parser_message_complete_cb(http_parser* parser) {
-	if(http_push_token(parser, HTTP_TOKEN_MESSAGE_COMPLETE) < 0) return -1;
+	HMParser *hm_parser = (HMParser*)parser;
+	hm_parser->state = hm_parser_state_message_complete;
+	hm_parser->last_id = hm_piece_none;
 	http_parser_pause(parser, 1);
 	return 0;
-}
-
-void hm_parser_consume_tokens(HMParser *hm_parser, int count) {
-	uint16_t new_count = 0;
-	assert(count <= hm_parser->count);
-	if(hm_parser->count > count) {
-		new_count = hm_parser->count - count;
-		/* slow patch consume some tokens.  Need to move other tokens to start. */
-		memmove(hm_parser->tokens, &(hm_parser->tokens[count]), sizeof(http_token) * new_count);
-	}
-	/* fast path consumed all tokens. */
-	hm_parser->count = new_count;
 }
 
 static uint32_t hm_parser_resume_parse(HMParser *hm_parser) {
@@ -223,6 +302,7 @@ static uint32_t hm_parser_resume_parse(HMParser *hm_parser) {
 	static const http_parser_settings settings = {
 		.on_message_begin    = hm_parser_message_begin_cb,
 		.on_url              = hm_parser_url_cb,
+		.on_status_complete  = hm_parser_status_complete_cb,
 		.on_header_field     = hm_parser_header_field_cb,
 		.on_header_value     = hm_parser_header_value_cb,
 		.on_headers_complete = hm_parser_headers_complete_cb,
@@ -234,7 +314,7 @@ static uint32_t hm_parser_resume_parse(HMParser *hm_parser) {
 	data_len -= parsed_off;
 	data += parsed_off;
 	if(data_len > 0) {
-		/* parse data into tokens. */
+		/* parse data into pieces. */
 		size_t nparsed = http_parser_execute(parser, &settings, data, data_len);
 		if(nparsed > 0) {
 			hm_parser->parsed_off += nparsed;
@@ -254,14 +334,6 @@ static uint32_t hm_parser_resume_parse(HMParser *hm_parser) {
 	}
 
 	return 0;
-}
-
-const http_token *hm_parser_get_tokens(HMParser *hm_parser) {
-	return hm_parser->tokens;
-}
-
-uint32_t hm_parser_count_tokens(HMParser *hm_parser) {
-	return hm_parser->count;
 }
 
 size_t hm_parser_prepare_buffer(HMParser *hm_parser, size_t len) {

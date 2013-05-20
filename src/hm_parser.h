@@ -12,6 +12,17 @@
 #define L_LIB_API extern
 #define L_INLINE static inline
 
+typedef enum {
+	hm_parser_state_message_begin = 0,
+	hm_parser_state_status_complete,
+	hm_parser_state_url,
+	hm_parser_state_headers,
+	hm_parser_state_headers_complete,
+	hm_parser_state_body,
+	hm_parser_state_message_complete,
+	hm_parser_state_none,
+} hm_parser_state_t;
+
 typedef struct HMParser HMParser;
 
 /**
@@ -39,12 +50,20 @@ L_LIB_API HMParser *hm_parser_new_request();
 L_LIB_API void hm_parser_free(HMParser *hm_parser);
 
 /**
- * Reset the parser & message state.
+ * Reset the parser, clear message state, clear data buffer.
  *
  * @param hm_parser pointer to HMParser structure to be reset.
  * @public @memberof HMParser
  */
 L_LIB_API void hm_parser_reset(HMParser *hm_parser);
+
+/**
+ * Begin parsing next http message in buffer.
+ *
+ * @param hm_parser pointer to HMParser structure.
+ * @public @memberof HMParser
+ */
+L_LIB_API void hm_parser_next_message(HMParser *hm_parser);
 
 /**
  * Append data to buffer.
