@@ -75,8 +75,6 @@ set(LUA_HTTP_MESSAGE_NOBJ_SRC
 set(LUA_HTTP_MESSAGE_SRC
 	http-parser/http_parser.c
 	http-parser/http_parser.h
-	src/http_tokenizer.c
-	src/http_tokenizer.h
 	src/hm_parser.c
 	src/hm_parser.h
 	src/hm_buffer.c
