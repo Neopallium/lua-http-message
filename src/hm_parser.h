@@ -12,18 +12,36 @@
 #define L_LIB_API extern
 #define L_INLINE static inline
 
-typedef enum {
-	hm_parser_state_message_begin = 0,
-	hm_parser_state_status_complete,
-	hm_parser_state_url,
-	hm_parser_state_headers,
-	hm_parser_state_headers_complete,
-	hm_parser_state_body,
-	hm_parser_state_message_complete,
-	hm_parser_state_none,
-} hm_parser_state_t;
+#define HM_PARSER_STATE_NONE              0
+#define HM_PARSER_STATE_MESSAGE_BEGIN     1
+#define HM_PARSER_STATE_STATUS_COMPLETE   2
+#define HM_PARSER_STATE_URL               3
+#define HM_PARSER_STATE_HEADERS           4
+#define HM_PARSER_STATE_HEADERS_COMPLETE  5
+#define HM_PARSER_STATE_BODY              6
+#define HM_PARSER_STATE_MESSAGE_COMPLETE  7
+#define HM_PARSER_STATE_NEEDS_INPUT       (1<<7)
+#define HM_PARSER_STATE_ERROR             (1<<8)
 
 typedef struct HMParser HMParser;
+
+typedef uint16_t hm_idx_t;
+typedef uint32_t hm_len_t;
+
+typedef int16_t hm_state_t;
+
+typedef struct HMString {
+	const char *str;
+	hm_len_t   len;
+} HMString;
+
+typedef struct HMHeader {
+	const char *name;
+	const char *value;
+	hm_len_t   name_len;
+	hm_len_t   value_len;
+	int        name_id;
+} HMHeader;
 
 /**
  * Create HTTP Response message.
@@ -73,7 +91,7 @@ L_LIB_API void hm_parser_next_message(HMParser *hm_parser);
  * @param len number of bytes to append.
  * @public @memberof HMParser
  */
-L_LIB_API void hm_parser_append_data(HMParser *hm_parser, const char *data, size_t len);
+L_LIB_API size_t hm_parser_append_data(HMParser *hm_parser, const char *data, size_t len);
 
 /**
  * Prepare buffer for appending more data.
@@ -111,17 +129,31 @@ L_LIB_API size_t hm_parser_get_buffer_capacity(HMParser *hm_parser);
 L_LIB_API bool hm_parser_append_buffer_bytes(HMParser *hm_parser, size_t len);
 
 /**
- * Parse new data that has been written into the buffer.
+ * Tell the parser that there is no more data.
  *
  * @param hm_parser pointer to HMParser structure.
- * @param is_eof true if there is no more data.
  * @public @memberof HMParser
  */
-L_LIB_API uint32_t hm_parser_parse(HMParser *hm_parser, bool is_eof);
+L_LIB_API void hm_parser_eof(HMParser *hm_parser);
+
+/**
+ * Continue parsing data in buffer.
+ *
+ * @param hm_parser pointer to HMParser structure.
+ * @public @memberof HMParser
+ */
+L_LIB_API int hm_parser_execute(HMParser *hm_parser);
 
 /**
  * methods to access HTTP headers.
  */
+L_LIB_API HMString *hm_parser_get_url(HMParser *hm_parser);
+
+L_LIB_API uint32_t hm_parser_count_headers(HMParser *hm_parser);
+
+L_LIB_API HMHeader *hm_parser_get_header(HMParser *hm_parser, uint32_t idx);
+
+L_LIB_API HMString *hm_parser_next_body(HMParser *hm_parser);
 
 /**
  * methods to access info from http_parser.
