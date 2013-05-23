@@ -33,7 +33,8 @@ local callback_names = {
 	"on_message_complete",
 }
 
-local null_callbacks = {
+local parser_mt = {}
+local meths = {
 on_message_begin = function()
 end,
 on_url = function(data)
@@ -47,41 +48,138 @@ end,
 on_message_complete = function()
 end,
 }
+parser_mt.__index = meths
 
-local parser_mt = {}
-parser_mt.__index = parser_mt
-
-function parser_mt:is_upgrade()
+function meths:is_upgrade()
 	return self.hm_parser:is_upgrade()
 end
 
-function parser_mt:should_keep_alive()
+function meths:should_keep_alive()
 	return self.hm_parser:should_keep_alive()
 end
 
-function parser_mt:method()
+function meths:method()
 	return self.hm_parser:method_str()
 end
 
-function parser_mt:version()
+function meths:version()
 	local version = self.hm_parser:version()
 	return (version / 65536), (version % 65536)
 end
 
-function parser_mt:status_code()
+function meths:status_code()
 	return self.hm_parser:status_code()
 end
 
-function parser_mt:is_error()
+function meths:is_error()
 	return self.hm_parser:is_error()
 end
 
-function parser_mt:error()
+function meths:error()
 	return self.hm_parser:error(), self.hm_parser:error_name(), self.hm_parser:error_description()
 end
 
+local states = hm.states
+local NONE = states.NONE
+local MESSAGE_BEGIN = states.MESSAGE_BEGIN
+local STATUS_COMPLETE = states.STATUS_COMPLETE
+local URL = states.URL
+local HEADERS = states.HEADERS
+local HEADERS_COMPLETE = states.HEADERS_COMPLETE
+local BODY = states.BODY
+local MESSAGE_COMPLETE = states.MESSAGE_COMPLETE
 local NEEDS_INPUT = states.NEEDS_INPUT
 local ERROR = states.ERROR
+
+local function hm_MESSAGE_COMPLETE(self, state)
+	-- Send on_body(nil) message to comply with LTN12
+	self.on_body()
+	self.on_message_complete()
+	-- Prepare parser for next message.
+	self.hm_parser:next_message()
+	return NONE
+end
+
+local function hm_BODY(self, state)
+	local on_body = self.on_body
+	repeat
+		local data = self.hm_parser:next_body()
+		if not data then break end
+		on_body(data)
+	until false
+	if state >= MESSAGE_COMPLETE then
+		return hm_MESSAGE_COMPLETE(self, state)
+	end
+	return HEADERS_COMPLETE
+end
+
+local function flush_url(self)
+	if not self.url then
+		local url = self.hm_parser:get_url()
+		self.url = url
+		return self.on_url(url)
+	end
+end
+
+local function hm_HEADERS_COMPLETE(self, state)
+	local hm_parser = self.hm_parser
+	flush_url(self)
+	local count = hm_parser:count_headers()
+	local on_header = self.on_header
+	for i=0,count-1 do
+		local id, name, value = hm_parser:get_header(i)
+		on_header(name, value)
+	end
+	self.on_headers_complete()
+	if state >= BODY then
+		return hm_BODY(self, state)
+	end
+	return HEADERS_COMPLETE
+end
+
+local function hm_HEADERS(self, state)
+	if state >= HEADERS_COMPLETE then
+		return hm_HEADERS_COMPLETE(self, state)
+	end
+	flush_url(self)
+	return HEADERS -- last state.
+end
+
+local function hm_URL(self, state)
+	if state >= HEADERS then
+		return hm_HEADERS(self, state)
+	end
+	return URL
+end
+
+local function hm_STATUS_COMPLETE(self, state)
+	if state >= URL then
+		return hm_URL(self, state)
+	end
+	return STATUS_COMPLETE
+end
+
+local function hm_MESSAGE_BEGIN(self, state)
+	self.on_message_begin()
+	self.url = nil
+
+	if state >= STATUS_COMPLETE then
+		return hm_STATUS_COMPLETE(self, state)
+	end
+	return MESSAGE_BEGIN
+end
+
+local parser_states = {
+	[NONE] = function()end,
+	[MESSAGE_BEGIN] = hm_MESSAGE_BEGIN,
+	[STATUS_COMPLETE] = hm_STATUS_COMPLETE,
+	[URL] = hm_URL,
+	[HEADERS] = hm_HEADERS,
+	[HEADERS_COMPLETE] = hm_HEADERS_COMPLETE,
+	[BODY] = hm_BODY,
+	[MESSAGE_COMPLETE] = hm_MESSAGE_COMPLETE,
+}
+
 local function parser_execute(self, len)
 	local hm_parser = self.hm_parser
 	local needs_input = false
@@ -96,7 +194,11 @@ local function parser_execute(self, len)
 		needs_input = true
 		rc = rc - NEEDS_INPUT
 	end
-	self:flush(rc)
+	local last = self.last_state
+	if rc ~= last then
+		-- flush all states from last to new.
+		self.last_state = parser_states[last + 1](self, rc)
+	end
 
 	if needs_input then
 		return len
@@ -105,7 +207,7 @@ local function parser_execute(self, len)
 	return parser_execute(self, len)
 end
 
-function parser_mt:execute(data)
+function meths:execute(data)
 	local len = 0
 	if data then
 		len = #data
@@ -118,95 +220,18 @@ function parser_mt:execute(data)
 	return parser_execute(self, len)
 end
 
-function parser_mt:execute_buffer(buf)
+function meths:execute_buffer(buf)
 	return self:execute(tostring(buf) or '')
 end
 
-function parser_mt:reset()
+function meths:reset()
 	self.last_state = 0
 	self.hm_parser:reset()
 end
 
-local function create_parser(hm_parser, cbs)
-	local self = {
-		hm_parser = hm_parser,
-		cbs = cbs,
-		last_state = 0,
-	}
-	-- create null callbacks for missing ones.
-	for i=1,#callback_names do
-		local name = callback_names[i]
-		if not cbs[name] then cbs[name] = null_callbacks[name] end
-	end
-
-	local function consume_body(self)
-		repeat
-			local data = hm_parser:next_body()
-			if not data then break end
-			cbs.on_body(data)
-		until false
-	end
-
-	local url
-	local function flush_url(self)
-		if not url then
-			url = hm_parser:get_url()
-			return cbs.on_url(url)
-		end
-	end
-
-	local function head_complete(self)
-		flush_url(self)
-		local count = hm_parser:count_headers()
-		for i=0,count-1 do
-			local id, name, value = hm_parser:get_header(i)
-			cbs.on_header(name, value)
-		end
-		cbs.on_headers_complete()
-	end
-
-	local handlers = {
-		[states.MESSAGE_BEGIN] = function(self)
-			url = nil
-			return cbs.on_message_begin()
-		end,
-		[states.STATUS_COMPLETE] = function(self)
-		end,
-		[states.URL] = function(self)
-		end,
-		[states.HEADERS] = function(self)
-			flush_url(self)
-		end,
-		[states.HEADERS_COMPLETE] = head_complete,
-		[states.BODY] = consume_body,
-		[states.MESSAGE_COMPLETE] = function(self)
-			consume_body()
-			-- Send on_body(nil) message to comply with LTN12
-			cbs.on_body()
-			cbs.on_message_complete()
-			-- Prepare parser for next message.
-			url = nil
-			hm_parser:next_message()
-			self.last_state = 0
-		end,
-	}
-	-- states that should always be flushed.
-	local BODY = states.BODY
-	self.flush = function(self, new_state)
-		local last = self.last_state
-		if new_state == last then
-			if new_state == BODY then
-				-- keep flushing BODY state.
-				handlers[new_state](self)
-			end
-			return
-		end
-		self.last_state = new_state
-		-- flush all states from last to new.
-		for s=last+1,new_state do
-			handlers[s](self)
-		end
-	end
+local function create_parser(hm_parser, self)
+	self.last_state = 0
+	self.hm_parser = hm_parser
 	return setmetatable(self, parser_mt)
 end
 
