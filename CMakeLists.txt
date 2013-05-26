@@ -21,6 +21,9 @@ include(CustomMacros)
 ## LuaNativeObjects
 include(LuaNativeObjects)
 
+## Gperf
+include(FindGperf)
+
 ## Lua 5.1.x
 include(FindLua51)
 if(NOT ${LUA51_FOUND})
@@ -81,6 +84,7 @@ set(LUA_HTTP_MESSAGE_SRC
 	src/hm_buffer.h
 	src/hm_array.c
 	src/hm_array.h
+	hm_header_ids.gperf
 )
 
 if(${USE_PRE_GENERATED_BINDINGS})
@@ -89,7 +93,9 @@ else()
 	# Generate Lua bindings.
 	GenLuaNativeObjects(LUA_HTTP_MESSAGE_NOBJ_SRC)
 endif()
-set(LUA_HTTP_MESSAGE_SRC ${LUA_HTTP_MESSAGE_SRC} ${LUA_HTTP_MESSAGE_NOBJ_SRC})
+GenGperfFiles(LUA_HTTP_MESSAGE_SRC)
+set(LUA_HTTP_MESSAGE_SRC ${LUA_HTTP_MESSAGE_SRC} ${LUA_HTTP_MESSAGE_NOBJ_SRC}
+				${HTTP_MESSAGE_GPERF})
 
 add_library(lua-http_message MODULE ${LUA_HTTP_MESSAGE_SRC})
 target_link_libraries(lua-http_message ${COMMON_LIBS})

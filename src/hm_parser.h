@@ -20,8 +20,8 @@
 #define HM_PARSER_STATE_HEADERS_COMPLETE  5
 #define HM_PARSER_STATE_BODY              6
 #define HM_PARSER_STATE_MESSAGE_COMPLETE  7
-#define HM_PARSER_STATE_NEEDS_INPUT       (1<<7)
-#define HM_PARSER_STATE_ERROR             (1<<8)
+#define HM_PARSER_STATE_NEEDS_INPUT       (1<<3)
+#define HM_PARSER_STATE_ERROR             (1<<4)
 
 typedef struct HMParser HMParser;
 
@@ -29,11 +29,6 @@ typedef uint16_t hm_idx_t;
 typedef uint32_t hm_len_t;
 
 typedef int16_t hm_state_t;
-
-typedef struct HMString {
-	const char *str;
-	hm_len_t   len;
-} HMString;
 
 typedef struct HMHeader {
 	const char *name;
@@ -147,13 +142,15 @@ L_LIB_API int hm_parser_execute(HMParser *hm_parser);
 /**
  * methods to access HTTP headers.
  */
-L_LIB_API HMString *hm_parser_get_url(HMParser *hm_parser);
+L_LIB_API const char *hm_parser_get_url(HMParser *hm_parser, size_t *len);
 
 L_LIB_API uint32_t hm_parser_count_headers(HMParser *hm_parser);
 
+L_LIB_API void hm_parser_clear_headers(HMParser *hm_parser);
+
 L_LIB_API HMHeader *hm_parser_get_header(HMParser *hm_parser, uint32_t idx);
 
-L_LIB_API HMString *hm_parser_next_body(HMParser *hm_parser);
+L_LIB_API const char *hm_parser_next_body(HMParser *hm_parser, size_t *len);
 
 /**
  * methods to access info from http_parser.

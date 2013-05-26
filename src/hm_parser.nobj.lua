@@ -18,18 +18,12 @@
 -- OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 -- THE SOFTWARE.
 
-basetype "HMString *" "nil" "NULL"
 basetype "HMHeader *" "nil" "NULL"
 
 object "HMParser" {
 	include"hm_parser.h",
 	ffi_cdef[[
 typedef uint32_t hm_len_t;
-
-typedef struct HMString {
-	const char *str;
-	hm_len_t   len;
-} HMString;
 
 typedef struct HMHeader {
 	const char *name;
@@ -48,6 +42,20 @@ typedef struct HMHeader {
 
 	method "append" {
 		c_method_call "size_t" "hm_parser_append_data" { "const char *", "data", "size_t", "#data" },
+	},
+
+	method "append_buffer" {
+		var_in{"Buffer", "buf"},
+		c_source[[
+	${data_len} = ${buf}_if->get_size(${buf});
+	${data} = (const char *)${buf}_if->const_data(${buf});
+]],
+		ffi_source[[
+	${data_len} = ${buf}_if.get_size(${buf})
+	${data} = ${buf}_if.const_data(${buf})
+]],
+		c_method_call "size_t" "hm_parser_append_data"
+			{ "const char *", "(data)", "size_t", "(data_len)" },
 	},
 
 	method "eof" {
@@ -74,21 +82,13 @@ typedef struct HMHeader {
 		c_method_call "uint32_t" "hm_parser_count_headers" {},
 	},
 
+	method "clear_headers" {
+		c_method_call "void" "hm_parser_clear_headers" {},
+	},
+
 	method "get_url" {
-		var_out { "const char *", "url", has_length = 1 },
-		c_method_call { "HMString *", "(url_str)" } "hm_parser_get_url" {},
-		c_source [[
-	if(${url_str}) {
-		${url} = ${url_str}->str;
-		${url_len} = ${url_str}->len;
-	}
-]],
-		ffi_source [[
-	if ${url_str} ~= nil then
-		${url} = ${url_str}.str
-		${url_len} = ${url_str}.len
-	end
-]],
+		c_method_call { "const char *", "url", has_length = 1 } "hm_parser_get_url"
+			{ "size_t", "&#url" },
 	},
 
 	method "get_header" {
@@ -99,38 +99,30 @@ typedef struct HMHeader {
 		c_source [[
 	if(${header}) {
 		${name_id} = ${header}->name_id;
-		${name} = ${header}->name;
-		${name_len} = ${header}->name_len;
+		if(${name_id} <= 0) {
+			${name} = ${header}->name;
+			${name_len} = ${header}->name_len;
+		}
 		${value} = ${header}->value;
 		${value_len} = ${header}->value_len;
 	}
 ]],
 		ffi_source [[
 	if ${header} ~= nil then
-		${name_id} = ${header}.name_id
-		${name} = ${header}.name
-		${name_len} = ${header}.name_len
-		${value} = ${header}.value
-		${value_len} = ${header}.value_len
+		local name
+		local id = ${header}.name_id
+		if id <= 0 then
+			name = ffi_string(${header}.name, ${header}.name_len)
+		end
+		return id, name,
+			ffi_string(${header}.value, ${header}.value_len)
 	end
 ]],
 	},
 
 	method "next_body" {
-		var_out { "const char *", "body", has_length = 1 },
-		c_method_call { "HMString *", "(str)" } "hm_parser_next_body" {},
-		c_source [[
-	if(${str}) {
-		${body} = ${str}->str;
-		${body_len} = ${str}->len;
-	}
-]],
-		ffi_source [[
-	if ${str} ~= nil then
-		${body} = ${str}.str
-		${body_len} = ${str}.len
-	end
-]],
+		c_method_call { "const char *", "body", has_length = 1 } "hm_parser_next_body"
+			{ "size_t", "&#body" },
 	},
 
 	-- standard http-parser methods

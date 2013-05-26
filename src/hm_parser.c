@@ -50,22 +50,21 @@ struct HMPiece {
 struct HMParser {
 	http_parser parser;   /**< embedded http_parser. */
 	HMPiece       *pieces;
-	HMBuffer      *buf;         /**< buffer to hold raw http message. */
 	uint32_t      state: 10;
-	uint32_t      last_id: 4;
+	uint32_t      last_id: 3;
 	uint32_t      is_eof: 1;
-	hm_len_t      parsed_off;   /**< http parser offset. */
-	hm_len_t      buf_len;      /**< number of bytes in buffer. */
 	/* HTTP Message fields. */
 	hm_idx_t      url_idx;
 	hm_idx_t      headers_start;
 	hm_idx_t      headers_end;
 	hm_idx_t      body_start;
+	hm_idx_t      body_end;
+
+	hm_len_t      parsed_off;   /**< http parser offset. */
+	hm_len_t      buf_len;      /**< number of bytes in buffer. */
+	HMBuffer      *buf;         /**< buffer to hold raw http message. */
 	/* tmp data */
-	union {
-		HMString str;
-		HMHeader header;
-	} tmp;
+	HMHeader tmp_header;
 };
 
 static void hm_parser_clear_message(HMParser *hm_parser) {
@@ -78,6 +77,7 @@ static void hm_parser_clear_message(HMParser *hm_parser) {
 	hm_parser->headers_start = HM_PIECE_INVALID;
 	hm_parser->headers_end = HM_PIECE_INVALID;
 	hm_parser->body_start = HM_PIECE_INVALID;
+	hm_parser->body_end = HM_PIECE_INVALID;
 }
 
 static HMParser *hm_parser_new(int is_request) {
@@ -157,6 +157,17 @@ void hm_parser_free(HMParser* hm_parser) {
 	free(hm_parser);
 }
 
+/* in-place string tolower, for HTTP headers. */
+static void hm_str_lower(char *p, size_t len) {
+	char *p_end = p + len;
+	for(; p < p_end; p++) {
+		char c = *p;
+		if(c >= 'A' && c <= 'Z') {
+			*p = c + 32;
+		}
+	}
+}
+
 #define HM_PARSER_ARY_GROW_CHECK(hm_parser, _ary, _idx, _grow, _max) do { \
 	typeof((hm_parser)->_ary) ary = (hm_parser)->_ary; \
 	size_t count = hm_array_count(ary); \
@@ -193,7 +204,7 @@ static int http_push_piece(http_parser* parser, hm_piece_t piece_id, const char 
 	if(hm_parser->last_id == piece_id) {
 		append_to_last = true;
 		/* don't merge large body pieces. */
-		if(piece_id == hm_piece_body && len > 100) {
+		if(piece_id == hm_piece_body && len > 512) {
 			append_to_last = false;
 		}
 	}
@@ -254,6 +265,10 @@ static int hm_parser_url_cb(http_parser* parser, const char* data, size_t len) {
 
 static int hm_parser_header_field_cb(http_parser* parser, const char* data, size_t len) {
 	HMParser *hm_parser = (HMParser*)parser;
+	if(hm_parser->state >= HM_PARSER_STATE_HEADERS_COMPLETE) {
+		/* ignore Trailers for now. */
+		return 0;
+	}
 	hm_parser->state = HM_PARSER_STATE_HEADERS;
 	if(hm_parser->headers_start == HM_PIECE_INVALID) {
 		hm_parser->headers_start = hm_array_count(hm_parser->pieces);
@@ -264,6 +279,10 @@ static int hm_parser_header_field_cb(http_parser* parser, const char* data, size
 
 static int hm_parser_header_value_cb(http_parser* parser, const char* data, size_t len) {
 	HMParser *hm_parser = (HMParser*)parser;
+	if(hm_parser->state >= HM_PARSER_STATE_HEADERS_COMPLETE) {
+		/* ignore Trailers for now. */
+		return 0;
+	}
 	hm_parser->state = HM_PARSER_STATE_HEADERS;
 	return http_push_piece(parser, hm_piece_header_value, data, len);
 }
@@ -276,7 +295,9 @@ static int hm_parser_headers_complete_cb(http_parser* parser) {
 	if(hm_parser->headers_start != HM_PIECE_INVALID) {
 		hm_parser->headers_end = hm_array_count(hm_parser->pieces);
 	}
-	http_parser_pause(parser, 1);
+	if(parser->type == HTTP_RESPONSE) {
+		http_parser_pause(parser, 1);
+	}
 	return 0;
 }
 
@@ -287,6 +308,7 @@ static int hm_parser_body_cb(http_parser* parser, const char* data, size_t len) 
 	/* mark start of body pieces. */
 	if(hm_parser->body_start == HM_PIECE_INVALID) {
 		hm_parser->body_start = hm_array_count(hm_parser->pieces);
+		hm_parser->body_end = hm_parser->body_start;
 		hm_parser->last_id = hm_piece_none;
 	}
 	return http_push_piece(parser, hm_piece_body, data, len);
@@ -318,6 +340,12 @@ static int hm_parser_resume_parse(HMParser *hm_parser, char *data, size_t data_l
 	size_t nparsed = http_parser_execute(parser, &settings, data, data_len);
 	if(nparsed > 0) {
 		hm_parser->parsed_off += nparsed;
+		if(hm_parser->state == HM_PARSER_STATE_HEADERS) {
+			hm_parser->headers_end = hm_array_count(hm_parser->pieces);
+		}
+		if(hm_parser->state == HM_PARSER_STATE_BODY) {
+			hm_parser->body_end = hm_array_count(hm_parser->pieces);
+		}
 	}
 	/* check for error. */
 	if(parser->http_errno != HPE_OK) {
@@ -325,6 +353,10 @@ static int hm_parser_resume_parse(HMParser *hm_parser, char *data, size_t data_l
 		if(parser->http_errno == HPE_PAUSED) {
 			/* resume parser. */
 			http_parser_pause(parser, 0);
+			/* check if buffer is also empty. */
+			if(hm_parser->parsed_off == hm_parser->buf_len) {
+				hm_parser->state |= HM_PARSER_STATE_NEEDS_INPUT;
+			}
 		} else {
 			/* return -1 to indicate a parser error. */
 			hm_parser->state |= HM_PARSER_STATE_ERROR;
@@ -411,7 +443,7 @@ void hm_parser_eof(HMParser *hm_parser) {
 }
 
 int hm_parser_execute(HMParser* hm_parser) {
-	char *data = (char *)hm_buffer_data(hm_parser->buf);
+	char *data = hm_parser->parser.data;
 	size_t data_len = hm_parser->buf_len;
 	size_t parsed_off = hm_parser->parsed_off;
 	int rc = 0;
@@ -453,15 +485,14 @@ int hm_parser_execute(HMParser* hm_parser) {
 	return hm_parser->state;
 }
 
-HMString *hm_parser_get_url(HMParser *hm_parser) {
-	HMString *str = NULL;
+const char *hm_parser_get_url(HMParser *hm_parser, size_t *len) {
+	const char *str = NULL;
 	hm_idx_t idx = hm_parser->url_idx;
+	assert(len != NULL);
 	if(idx != HM_PIECE_INVALID) {
-		const char *data = (const char *)hm_buffer_data(hm_parser->buf);
-		HMPiece *url = hm_parser->pieces + idx;
-		str = &(hm_parser->tmp.str);
-		str->str = data + url->start;
-		str->len = url->end - url->start;
+		HMPiece *piece = hm_parser->pieces + idx;
+		str = hm_parser->parser.data + piece->start;
+		*len = piece->end - piece->start;
 	}
 	return str;
 }
@@ -476,14 +507,23 @@ uint32_t hm_parser_count_headers(HMParser *hm_parser) {
 	return (headers_end - headers_start) >> 1;
 }
 
+void hm_parser_clear_headers(HMParser *hm_parser) {
+	hm_parser->headers_start = HM_PIECE_INVALID;
+	hm_parser->headers_end = HM_PIECE_INVALID;
+}
+
+#include "hm_header_ids.h"
+
 HMHeader *hm_parser_get_header(HMParser *hm_parser, uint32_t idx) {
 	HMHeader *head = NULL;
 	uint32_t headers_start = hm_parser->headers_start;
 	uint32_t headers_end = hm_parser->headers_end;
 	uint32_t count = headers_end - headers_start;
-	const char *data;
-	HMPiece  *name;
-	HMPiece  *value;
+	const hm_header_id *id;
+	HMPiece  *piece;
+	char *data;
+	char *name;
+	size_t name_len;
 
 	/* check for headers. */
 	if(headers_start == HM_PIECE_INVALID) {
@@ -499,34 +539,48 @@ HMHeader *hm_parser_get_header(HMParser *hm_parser, uint32_t idx) {
 	idx += headers_start;
 
 	/* get name & value pieces. */
-	data = (const char *)hm_buffer_data(hm_parser->buf);
-	name = hm_parser->pieces + idx;
-	value = name + 1;
+	data = hm_parser->parser.data;
+	piece = hm_parser->pieces + idx;
 
 	/* fill tmp. HMHeader. */
-	head = &(hm_parser->tmp.header);
-	head->name_id = 0;
-	head->name = data + name->start;
-	head->name_len = name->end - name->start;
-	head->value = data + value->start;
-	head->value_len = value->end - value->start;
+	head = &(hm_parser->tmp_header);
+	name = data + piece->start;
+	name_len = piece->end - piece->start;
+	/* lookup header in id map. */
+	id = hm_header_ids_lookup(name, name_len);
+	if(id) {
+		/* found common header, use id for faster processing. */
+		head->name_id = id->id;
+		head->name = NULL;
+		head->name_len = 0;
+	} else {
+		/*
+		 * Convert unknown HTTP headers to lower case.
+		 */
+		hm_str_lower(name, name_len);
+		head->name = name;
+		head->name_len = name_len;
+	}
+	piece++;
+	head->value = data + piece->start;
+	head->value_len = piece->end - piece->start;
 
 	return head;
 }
 
-HMString *hm_parser_next_body(HMParser *hm_parser) {
-	HMString *str = NULL;
+const char *hm_parser_next_body(HMParser *hm_parser, size_t *len) {
+	const char *str = NULL;
 	hm_idx_t idx = hm_parser->body_start;
+	assert(len != NULL);
 	if(idx != HM_PIECE_INVALID) {
-		const char *data = (const char *)hm_buffer_data(hm_parser->buf);
 		HMPiece *piece = hm_parser->pieces + idx;
-		str = &(hm_parser->tmp.str);
-		str->str = data + piece->start;
-		str->len = piece->end - piece->start;
+		str = hm_parser->parser.data + piece->start;
+		*len = piece->end - piece->start;
 		/* consume piece. */
 		idx++;
-		if(idx >= hm_array_count(hm_parser->pieces)) {
+		if(idx >= hm_parser->body_end) {
 			idx = HM_PIECE_INVALID; /* no more pieces. */
+			hm_parser->body_end = HM_PIECE_INVALID;
 		}
 		hm_parser->body_start = idx;
 	}

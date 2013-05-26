@@ -1,0 +1,9 @@
+* Handle Trailers.
+* Add configurable limits (max headers, max http header size, max url size)
+* Better error handling for when limits are hit (max headers, max buffer size)
+
+Optimizations:
+* Shared reference counting buffers.
+* Create hm_message object to hold status/url/method/http version/headers.
+  This will allow request handlers to ignore fields they don't need.
+

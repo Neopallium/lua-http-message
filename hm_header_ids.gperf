@@ -1,0 +1,186 @@
+%struct-type
+%define initializer-suffix ,-1
+struct hm_header_id { int name; int id; };
+typedef struct hm_header_id hm_header_id;
+
+%delimiters=:
+%language=ANSI-C
+
+%readonly-tables
+%global-table
+%pic
+
+%compare-lengths
+%compare-strncmp
+%ignore-case
+
+%includes
+
+%define hash-function-name hm_header_ids_hash
+%define string-pool-name hm_header_ids_stringpool
+%define lookup-function-name hm_header_ids_lookup
+%define word-array-name hm_header_ids_table
+%define length-table-name hm_header_lengths
+
+%%
+# http://tools.ietf.org/html/rfc4229
+A-IM:                          1
+Accept:                        2
+Accept-Additions:              3
+Accept-Charset:                4
+Accept-Encoding:               5
+Accept-Features:               6
+Accept-Language:               7
+Accept-Ranges:                 8
+Age:                           9
+Allow:                        10
+Alternates:                   11
+Authentication-Info:          12
+Authorization:                13
+C-Ext:                        14
+C-Man:                        15
+C-Opt:                        16
+C-PEP:                        17
+C-PEP-Info:                   18
+Cache-Control:                19
+Connection:                   20
+Content-Base:                 21
+Content-Disposition:          22
+Content-Encoding:             23
+Content-ID:                   24
+Content-Language:             25
+Content-Length:               26
+Content-Location:             27
+Content-MD5:                  28
+Content-Range:                29
+Content-Script-Type:          30
+Content-Style-Type:           31
+Content-Type:                 32
+Content-Version:              33
+Cookie:                       34
+Cookie2:                      35
+DAV:                          36
+Date:                         37
+Default-Style:                38
+Delta-Base:                   39
+Depth:                        40
+Derived-From:                 41
+Destination:                  42
+Differential-ID:              43
+Digest:                       44
+ETag:                         45
+Expect:                       46
+Expires:                      47
+Ext:                          48
+From:                         49
+GetProfile:                   50
+Host:                         51
+IM:                           52
+If:                           53
+If-Match:                     54
+If-Modified-Since:            55
+If-None-Match:                56
+If-Range:                     57
+If-Unmodified-Since:          58
+Keep-Alive:                   59
+Label:                        60
+Last-Modified:                61
+Link:                         62
+Location:                     63
+Lock-Token:                   64
+MIME-Version:                 65
+Man:                          66
+Max-Forwards:                 67
+Meter:                        68
+Negotiate:                    69
+Opt:                          70
+Ordering-Type:                71
+Overwrite:                    72
+P3P:                          73
+PEP:                          74
+PICS-Label:                   75
+Pep-Info:                     76
+Position:                     77
+Pragma:                       78
+ProfileObject:                79
+Protocol:                     80
+Protocol-Info:                81
+Protocol-Query:               82
+Protocol-Request:             83
+Proxy-Authenticate:           84
+Proxy-Authentication-Info:    85
+Proxy-Authorization:          86
+Proxy-Features:               87
+Proxy-Instruction:            88
+Public:                       89
+Range:                        90
+Referer:                      91
+Retry-After:                  92
+Safe:                         93
+Security-Scheme:              94
+Server:                       95
+Set-Cookie:                   96
+Set-Cookie2:                  97
+SetProfile:                   98
+SoapAction:                   99
+Status-URI:                  100
+Surrogate-Capability:        101
+Surrogate-Control:           102
+TCN:                         103
+TE:                          104
+Timeout:                     105
+Trailer:                     106
+Transfer-Encoding:           107
+URI:                         108
+Upgrade:                     109
+User-Agent:                  110
+Variant-Vary:                111
+Vary:                        112
+Via:                         113
+WWW-Authenticate:            114
+Want-Digest:                 115
+Warning:                     116
+#
+# CORS http://en.wikipedia.org/wiki/Cross-origin_resource_sharing
+# http://www.w3.org/TR/cors/
+Origin:                           117
+Access-Control-Allow-Origin:      118
+Access-Control-Allow-Credentials: 119
+Access-Control-Allow-Methods:     120
+Access-Control-Allow-Headers:     121
+Access-Control-Expose-Headers:    122
+Access-Control-Max-Age:           123
+Access-Control-Request-Method:    124
+Access-Control-Request-Headers:   125
+#
+# Used in redirection, or when a new resource has been created.
+# This is a proprietary, non-standard header extension introduced
+# by Netscape and supported by most web browsers.
+Refresh:                          126
+#
+# HTTP Strict Transport Security (HSTS)
+# http://tools.ietf.org/html/rfc6797
+Strict-Transport-Security:        127
+#
+# Common non-standard request headers:
+# http://en.wikipedia.org/wiki/List_of_HTTP_header_fields
+X-Requested-With:                 128
+DNT:                              129
+X-Forwarded-For:                  130
+X-Forwarded-Proto:                131
+Front-End-Https:                  132
+X-ATT-DeviceId:                   133
+X-Wap-Profile:                    134
+Proxy-Connection:                 135
+#
+# Common non-standard response headers
+# http://en.wikipedia.org/wiki/List_of_HTTP_header_fields
+X-Frame-Options:                  136
+X-XSS-Protection:                 137
+Content-Security-Policy:          138
+X-Content-Security-Policy:        139
+X-WebKit-CSP:                     140
+X-Content-Type-Options:           141
+X-Powered-By:                     142
+X-UA-Compatible:                  143
+#

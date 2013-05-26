@@ -22,6 +22,7 @@ ERROR            = "HM_PARSER_STATE_ERROR",
 },
 
 subfiles {
+"hm_header_ids.nobj.lua",
 "src/hm_parser.nobj.lua",
 },
 
