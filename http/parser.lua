@@ -192,10 +192,6 @@ function meths:execute(data)
 end
 
 function meths:execute_buffer(buf)
-	return self:execute(tostring(buf) or '')
-end
-
-function meths:execute_buffer(buf)
 	local len = 0
 	if buf ~= nil then
 		len = #buf
